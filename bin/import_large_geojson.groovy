@@ -210,8 +210,13 @@ try {
 
     print "  [4/4] Resolving hierarchy..."
     hierarchy.resolveHierarchy()
+    long tResolve = System.currentTimeMillis()
+    print "  [4/4] Resolved in ${(tResolve - tAdd) / 1000.0}s"
+
+    print "  [5/5] Firing hierarchy update..."
+    fireHierarchyUpdate()
     long tDone = System.currentTimeMillis()
-    print "  [4/4] Resolved in ${(tDone - tAdd) / 1000.0}s"
+    print "  [5/5] Update fired in ${(tDone - tResolve) / 1000.0}s"
 
     def totalObjects = hierarchy.getAllObjects(false).size()
     print "  OK: Imported ${pathObjects.size()} objects in ${(tDone - t0) / 1000.0}s (total in hierarchy: ${totalObjects})"
