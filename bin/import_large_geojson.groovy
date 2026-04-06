@@ -30,7 +30,7 @@ def imageName = getProjectEntry()?.getImageName() ?: '(unknown image)'
 
 // Strip extension to get stem (handles .ome.tif, .ome.tiff, .tiff, etc.)
 def stem = imageName
-    .replaceAll(/\.ome\.tiff?$/i, "")
+    .replaceAll(/(?i)\.ome\.tiff?$/, "")
     .replaceAll(/\.[^.]+$/, "")
 
 // Build expected GeoJSON filename from pattern
