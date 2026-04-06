@@ -1,4 +1,8 @@
 import qupath.lib.objects.PathObject
+import qupath.lib.io.GsonTools
+import com.google.gson.stream.JsonReader
+import com.google.gson.stream.JsonToken
+import com.google.gson.JsonElement
 
 // ============================================================
 // CONFIGURATION (from environment variables set by Nextflow)
@@ -62,14 +66,114 @@ print "  File size         : ${String.format('%.1f', fileSizeMB)} MB"
 try {
     long t0 = System.currentTimeMillis()
 
-    // Read GeoJSON objects using QuPath's built-in reader
-    print "  [1/4] Reading GeoJSON file (${String.format('%.1f', fileSizeMB)} MB)..."
-    def pathObjects = PathIO.readObjects(geojsonFile.toPath())
+    // ── Stream-parse GeoJSON one feature at a time ──────────────
+    // PathIO.readObjects() loads the ENTIRE JSON tree via Gson,
+    // which for 100+ GB files requires 3-5x file size in heap.
+    // Instead, we use Gson's streaming JsonReader to parse one
+    // feature at a time, convert it to a PathObject, then discard
+    // the intermediate JsonElement immediately.
+    // ────────────────────────────────────────────────────────────
+    print "  [1/4] Stream-parsing GeoJSON file (${String.format('%.1f', fileSizeMB)} MB)..."
+
+    def gson = GsonTools.getInstance()
+    def jsonElementAdapter = gson.getAdapter(JsonElement.class)
+    def pathObjects = []
+    int featureCount = 0
+    int errorCount = 0
+
+    def fis = new FileInputStream(geojsonFile)
+    def bis = new BufferedInputStream(fis, 8 * 1024 * 1024)  // 8 MB read buffer
+    def isr = new InputStreamReader(bis, 'UTF-8')
+    def reader = new JsonReader(isr)
+    reader.setLenient(true)
+
+    try {
+        def firstToken = reader.peek()
+
+        if (firstToken == JsonToken.BEGIN_OBJECT) {
+            // Standard FeatureCollection: { "type": "FeatureCollection", "features": [...] }
+            reader.beginObject()
+            boolean foundFeatures = false
+            while (reader.hasNext()) {
+                def key = reader.nextName()
+                if (key == "features") {
+                    foundFeatures = true
+                    reader.beginArray()
+                    while (reader.hasNext()) {
+                        def element = jsonElementAdapter.read(reader)
+                        try {
+                            def obj = gson.fromJson(element, PathObject.class)
+                            if (obj != null) pathObjects.add(obj)
+                        } catch (Exception fe) {
+                            errorCount++
+                            if (errorCount <= 5) {
+                                print "    WARNING: Failed to parse feature #${featureCount}: ${fe.getMessage()}"
+                            }
+                        }
+                        featureCount++
+                        if (featureCount % 50000 == 0) {
+                            def rt = Runtime.getRuntime()
+                            def usedMB = (rt.totalMemory() - rt.freeMemory()) / (1024L * 1024L)
+                            def maxMB  = rt.maxMemory() / (1024L * 1024L)
+                            print "    ... parsed ${featureCount} features (${pathObjects.size()} objects, memory: ${usedMB}/${maxMB} MB)"
+                        }
+                    }
+                    reader.endArray()
+                } else {
+                    reader.skipValue()
+                }
+            }
+            reader.endObject()
+            if (!foundFeatures) {
+                print "  ERROR: JSON object had no 'features' key — is this a valid GeoJSON FeatureCollection?"
+                print "═".repeat(60)
+                return
+            }
+
+        } else if (firstToken == JsonToken.BEGIN_ARRAY) {
+            // Bare array of features: [ { "type": "Feature", ... }, ... ]
+            reader.beginArray()
+            while (reader.hasNext()) {
+                def element = jsonElementAdapter.read(reader)
+                try {
+                    def obj = gson.fromJson(element, PathObject.class)
+                    if (obj != null) pathObjects.add(obj)
+                } catch (Exception fe) {
+                    errorCount++
+                    if (errorCount <= 5) {
+                        print "    WARNING: Failed to parse feature #${featureCount}: ${fe.getMessage()}"
+                    }
+                }
+                featureCount++
+                if (featureCount % 50000 == 0) {
+                    def rt = Runtime.getRuntime()
+                    def usedMB = (rt.totalMemory() - rt.freeMemory()) / (1024L * 1024L)
+                    def maxMB  = rt.maxMemory() / (1024L * 1024L)
+                    print "    ... parsed ${featureCount} features (${pathObjects.size()} objects, memory: ${usedMB}/${maxMB} MB)"
+                }
+            }
+            reader.endArray()
+
+        } else {
+            print "  ERROR: Unexpected JSON structure (expected object or array, got ${firstToken})"
+            print "═".repeat(60)
+            return
+        }
+    } finally {
+        reader.close()
+    }
+
     long tRead = System.currentTimeMillis()
-    print "  [1/4] Read complete: ${pathObjects.size()} objects in ${(tRead - t0) / 1000.0}s"
+    def rt = Runtime.getRuntime()
+    def usedMB = (rt.totalMemory() - rt.freeMemory()) / (1024L * 1024L)
+    def maxMB  = rt.maxMemory() / (1024L * 1024L)
+    print "  [1/4] Read complete: ${pathObjects.size()} objects from ${featureCount} features in ${(tRead - t0) / 1000.0}s (memory: ${usedMB}/${maxMB} MB)"
+    if (errorCount > 0) {
+        print "  WARNING: ${errorCount} features failed to parse"
+    }
 
     if (pathObjects.isEmpty()) {
-        print "  WARNING: GeoJSON contained no objects, skipping"
+        print "  WARNING: GeoJSON contained no valid objects, skipping"
         print "═".repeat(60)
         return
     }
