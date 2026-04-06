@@ -3,6 +3,9 @@ import qupath.lib.io.GsonTools
 import com.google.gson.stream.JsonReader
 import com.google.gson.stream.JsonToken
 import com.google.gson.JsonElement
+import java.util.concurrent.Executors
+import java.util.concurrent.Callable
+import java.util.concurrent.Future
 
 // ============================================================
 // CONFIGURATION (from environment variables set by Nextflow)
@@ -70,19 +73,83 @@ try {
     // PathIO.readObjects() loads the ENTIRE JSON tree via Gson,
     // which for 100+ GB files requires 3-5x file size in heap.
     // Instead, we use Gson's streaming JsonReader to parse one
-    // feature at a time, convert it to a PathObject, then discard
-    // the intermediate JsonElement immediately.
+    // feature at a time, then convert to PathObject in parallel
+    // across a thread pool for maximum throughput.
     // ────────────────────────────────────────────────────────────
-    print "  [1/4] Stream-parsing GeoJSON file (${String.format('%.1f', fileSizeMB)} MB)..."
+    def nThreads = Math.max(2, Runtime.getRuntime().availableProcessors())
+    def BATCH_SIZE = 2000
+    print "  [1/5] Stream-parsing GeoJSON file (${String.format('%.1f', fileSizeMB)} MB) with ${nThreads} threads, batch size ${BATCH_SIZE}..."
 
     def gson = GsonTools.getInstance()
     def jsonElementAdapter = gson.getAdapter(JsonElement.class)
-    def pathObjects = []
+    def pathObjects = new ArrayList<PathObject>(400000)
     int featureCount = 0
     int errorCount = 0
 
+    def executor = Executors.newFixedThreadPool(nThreads)
+    def pendingFutures = new ArrayList<Future<List>>()
+
+    // Submit a batch of JsonElements for parallel conversion to PathObjects
+    def submitBatch = { List<JsonElement> batch ->
+        def localBatch = new ArrayList<JsonElement>(batch)
+        pendingFutures.add(executor.submit({
+            def results = new ArrayList<PathObject>(localBatch.size())
+            int localErrors = 0
+            for (elem in localBatch) {
+                try {
+                    def obj = gson.fromJson(elem, PathObject.class)
+                    if (obj != null) results.add(obj)
+                } catch (Exception fe) {
+                    localErrors++
+                }
+            }
+            return [results, localErrors]
+        } as Callable<List>))
+    }
+
+    // Drain completed futures to free memory
+    def drainFutures = {
+        for (future in pendingFutures) {
+            def result = future.get()
+            List<PathObject> objs = result[0]
+            int errs = result[1]
+            pathObjects.addAll(objs)
+            errorCount += errs
+        }
+        pendingFutures.clear()
+    }
+
+    def currentBatch = new ArrayList<JsonElement>(BATCH_SIZE)
+
+    // Closure to process one feature element from the stream
+    def processElement = { ->
+        def element = jsonElementAdapter.read(reader)
+        currentBatch.add(element)
+        featureCount++
+
+        if (currentBatch.size() >= BATCH_SIZE) {
+            submitBatch(currentBatch)
+            currentBatch = new ArrayList<JsonElement>(BATCH_SIZE)
+
+            // Drain futures periodically to avoid unbounded memory growth
+            // (drain every nThreads*2 batches so the pool stays fed)
+            if (pendingFutures.size() >= nThreads * 2) {
+                drainFutures()
+            }
+        }
+
+        if (featureCount % 50000 == 0) {
+            def rt = Runtime.getRuntime()
+            def usedMB = (rt.totalMemory() - rt.freeMemory()) / (1024L * 1024L)
+            def maxMB  = rt.maxMemory() / (1024L * 1024L)
+            def elapsed = (System.currentTimeMillis() - t0) / 1000.0
+            def rate = featureCount / elapsed
+            print "    ... parsed ${featureCount} features (${pathObjects.size()} converted, memory: ${usedMB}/${maxMB} MB, ${String.format('%.0f', rate)} feat/s)"
+        }
+    }
+
     def fis = new FileInputStream(geojsonFile)
-    def bis = new BufferedInputStream(fis, 8 * 1024 * 1024)  // 8 MB read buffer
+    def bis = new BufferedInputStream(fis, 64 * 1024 * 1024)  // 64 MB read buffer
     def isr = new InputStreamReader(bis, 'UTF-8')
     def reader = new JsonReader(isr)
     reader.setLenient(true)
@@ -100,23 +167,7 @@ try {
                     foundFeatures = true
                     reader.beginArray()
                     while (reader.hasNext()) {
-                        def element = jsonElementAdapter.read(reader)
-                        try {
-                            def obj = gson.fromJson(element, PathObject.class)
-                            if (obj != null) pathObjects.add(obj)
-                        } catch (Exception fe) {
-                            errorCount++
-                            if (errorCount <= 5) {
-                                print "    WARNING: Failed to parse feature #${featureCount}: ${fe.getMessage()}"
-                            }
-                        }
-                        featureCount++
-                        if (featureCount % 50000 == 0) {
-                            def rt = Runtime.getRuntime()
-                            def usedMB = (rt.totalMemory() - rt.freeMemory()) / (1024L * 1024L)
-                            def maxMB  = rt.maxMemory() / (1024L * 1024L)
-                            print "    ... parsed ${featureCount} features (${pathObjects.size()} objects, memory: ${usedMB}/${maxMB} MB)"
-                        }
+                        processElement()
                     }
                     reader.endArray()
                 } else {
@@ -127,6 +178,7 @@ try {
             if (!foundFeatures) {
                 print "  ERROR: JSON object had no 'features' key — is this a valid GeoJSON FeatureCollection?"
                 print "═".repeat(60)
+                executor.shutdownNow()
                 return
             }
 
@@ -134,40 +186,34 @@ try {
             // Bare array of features: [ { "type": "Feature", ... }, ... ]
             reader.beginArray()
             while (reader.hasNext()) {
-                def element = jsonElementAdapter.read(reader)
-                try {
-                    def obj = gson.fromJson(element, PathObject.class)
-                    if (obj != null) pathObjects.add(obj)
-                } catch (Exception fe) {
-                    errorCount++
-                    if (errorCount <= 5) {
-                        print "    WARNING: Failed to parse feature #${featureCount}: ${fe.getMessage()}"
-                    }
-                }
-                featureCount++
-                if (featureCount % 50000 == 0) {
-                    def rt = Runtime.getRuntime()
-                    def usedMB = (rt.totalMemory() - rt.freeMemory()) / (1024L * 1024L)
-                    def maxMB  = rt.maxMemory() / (1024L * 1024L)
-                    print "    ... parsed ${featureCount} features (${pathObjects.size()} objects, memory: ${usedMB}/${maxMB} MB)"
-                }
+                processElement()
             }
             reader.endArray()
 
         } else {
             print "  ERROR: Unexpected JSON structure (expected object or array, got ${firstToken})"
             print "═".repeat(60)
+            executor.shutdownNow()
             return
         }
     } finally {
         reader.close()
     }
 
+    // Submit any remaining features
+    if (!currentBatch.isEmpty()) {
+        submitBatch(currentBatch)
+    }
+
+    // Drain all remaining futures
+    drainFutures()
+    executor.shutdown()
+
     long tRead = System.currentTimeMillis()
     def rt = Runtime.getRuntime()
     def usedMB = (rt.totalMemory() - rt.freeMemory()) / (1024L * 1024L)
     def maxMB  = rt.maxMemory() / (1024L * 1024L)
-    print "  [1/4] Read complete: ${pathObjects.size()} objects from ${featureCount} features in ${(tRead - t0) / 1000.0}s (memory: ${usedMB}/${maxMB} MB)"
+    print "  [1/5] Read complete: ${pathObjects.size()} objects from ${featureCount} features in ${(tRead - t0) / 1000.0}s (memory: ${usedMB}/${maxMB} MB)"
     if (errorCount > 0) {
         print "  WARNING: ${errorCount} features failed to parse"
     }
@@ -182,36 +228,36 @@ try {
     def typeCounts = pathObjects.groupBy { it.getClass().getSimpleName() }.collectEntries { k, v -> [k, v.size()] }
     print "  Object types: ${typeCounts}"
 
-    print "  [2/4] Getting current hierarchy..."
+    print "  [2/5] Getting current hierarchy..."
     def hierarchy = getCurrentHierarchy()
     long tHierarchy = System.currentTimeMillis()
-    print "  [2/4] Hierarchy loaded in ${(tHierarchy - tRead) / 1000.0}s"
+    print "  [2/5] Hierarchy loaded in ${(tHierarchy - tRead) / 1000.0}s"
 
     if (clearExisting) {
         int existingCount = hierarchy.getAllObjects(false).size()
         if (existingCount > 0) {
-            print "  [3/4] Clearing ${existingCount} existing objects..."
+            print "  [3/5] Clearing ${existingCount} existing objects..."
             hierarchy.clearAll()
             long tClear = System.currentTimeMillis()
-            print "  [3/4] Cleared in ${(tClear - tHierarchy) / 1000.0}s"
+            print "  [3/5] Cleared in ${(tClear - tHierarchy) / 1000.0}s"
         } else {
-            print "  [3/4] No existing objects to clear"
+            print "  [3/5] No existing objects to clear"
         }
     } else {
         int existingCount = hierarchy.getAllObjects(false).size()
-        print "  [3/4] Keeping ${existingCount} existing objects (clear_existing=false)"
+        print "  [3/5] Keeping ${existingCount} existing objects (clear_existing=false)"
     }
 
-    print "  [4/4] Adding ${pathObjects.size()} objects to hierarchy..."
+    print "  [4/5] Adding ${pathObjects.size()} objects to hierarchy..."
     long tAddStart = System.currentTimeMillis()
     hierarchy.addObjects(pathObjects)
     long tAdd = System.currentTimeMillis()
-    print "  [4/4] Added objects in ${(tAdd - tAddStart) / 1000.0}s"
+    print "  [4/5] Added objects in ${(tAdd - tAddStart) / 1000.0}s"
 
-    print "  [4/4] Resolving hierarchy..."
+    print "  [4/5] Resolving hierarchy..."
     hierarchy.resolveHierarchy()
     long tResolve = System.currentTimeMillis()
-    print "  [4/4] Resolved in ${(tResolve - tAdd) / 1000.0}s"
+    print "  [4/5] Resolved in ${(tResolve - tAdd) / 1000.0}s"
 
     print "  [5/5] Firing hierarchy update..."
     fireHierarchyUpdate()
