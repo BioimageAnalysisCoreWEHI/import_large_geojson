@@ -1,0 +1,79 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/BioimageAnalysisCoreWEHI/import_large_geojson/main/nextflow_schema.json",
+  "title": "import_large_geojson pipeline parameters",
+  "description": "Headless QuPath import of large GeoJSON cell annotations into a QuPath project",
+  "type": "object",
+  "$defs": {
+    "input_output_options": {
+      "title": "Input/output options",
+      "type": "object",
+      "required": ["project", "geojson_dir"],
+      "properties": {
+        "project": {
+          "type": "string",
+          "format": "file-path",
+          "exists": true,
+          "description": "Path to QuPath project .qpproj file"
+        },
+        "qupath_bin": {
+          "type": "string",
+          "format": "file-path",
+          "exists": true,
+          "default": "/stornext/System/data/software/rhel/9/base/tools/QuPath/0.6.0/bin/QuPath",
+          "description": "Path to QuPath executable"
+        },
+        "script": {
+          "type": "string",
+          "format": "file-path",
+          "exists": true,
+          "default": "bin/import_large_geojson.groovy",
+          "description": "Path to Groovy script run by QuPath in headless mode"
+        },
+        "geojson_dir": {
+          "type": "string",
+          "format": "directory-path",
+          "exists": true,
+          "description": "Directory containing GeoJSON files to import. Files are matched to QuPath images by name."
+        },
+        "clear_existing": {
+          "type": "boolean",
+          "default": true,
+          "description": "Clear all existing objects from each image before importing new GeoJSON objects"
+        },
+        "file_pattern": {
+          "type": "string",
+          "default": "{stem}.geojson",
+          "description": "Filename pattern for matching GeoJSON files to images. {stem} is replaced with the image name (without extension)."
+        },
+        "outdir": {
+          "type": "string",
+          "format": "directory-path",
+          "description": "Output directory for log files"
+        },
+        "publish_dir_mode": {
+          "type": "string",
+          "default": "copy",
+          "description": "Method used by Nextflow publishDir",
+          "enum": ["symlink", "rellink", "link", "copy", "copyNoFollow", "move"]
+        }
+      }
+    },
+    "generic_options": {
+      "title": "Generic options",
+      "type": "object",
+      "properties": {
+        "validate_params": {
+          "type": "boolean",
+          "default": true,
+          "hidden": true,
+          "description": "Validate parameters against schema"
+        }
+      }
+    }
+  },
+  "allOf": [
+    { "$ref": "#/$defs/input_output_options" },
+    { "$ref": "#/$defs/generic_options" }
+  ]
+}
