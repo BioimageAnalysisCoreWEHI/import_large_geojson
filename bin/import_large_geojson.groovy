@@ -63,10 +63,10 @@ try {
     long t0 = System.currentTimeMillis()
 
     // Read GeoJSON objects using QuPath's built-in reader
-    print "  Reading GeoJSON..."
+    print "  [1/4] Reading GeoJSON file (${String.format('%.1f', fileSizeMB)} MB)..."
     def pathObjects = PathIO.readObjects(geojsonFile.toPath())
     long tRead = System.currentTimeMillis()
-    print "  Read ${pathObjects.size()} objects in ${(tRead - t0) / 1000.0}s"
+    print "  [1/4] Read complete: ${pathObjects.size()} objects in ${(tRead - t0) / 1000.0}s"
 
     if (pathObjects.isEmpty()) {
         print "  WARNING: GeoJSON contained no objects, skipping"
@@ -74,21 +74,43 @@ try {
         return
     }
 
+    // Count object types for reporting
+    def typeCounts = pathObjects.groupBy { it.getClass().getSimpleName() }.collectEntries { k, v -> [k, v.size()] }
+    print "  Object types: ${typeCounts}"
+
+    print "  [2/4] Getting current hierarchy..."
     def hierarchy = getCurrentHierarchy()
+    long tHierarchy = System.currentTimeMillis()
+    print "  [2/4] Hierarchy loaded in ${(tHierarchy - tRead) / 1000.0}s"
 
     if (clearExisting) {
         int existingCount = hierarchy.getAllObjects(false).size()
         if (existingCount > 0) {
+            print "  [3/4] Clearing ${existingCount} existing objects..."
             hierarchy.clearAll()
-            print "  Cleared ${existingCount} existing objects"
+            long tClear = System.currentTimeMillis()
+            print "  [3/4] Cleared in ${(tClear - tHierarchy) / 1000.0}s"
+        } else {
+            print "  [3/4] No existing objects to clear"
         }
+    } else {
+        int existingCount = hierarchy.getAllObjects(false).size()
+        print "  [3/4] Keeping ${existingCount} existing objects (clear_existing=false)"
     }
 
+    print "  [4/4] Adding ${pathObjects.size()} objects to hierarchy..."
+    long tAddStart = System.currentTimeMillis()
     hierarchy.addObjects(pathObjects)
-    hierarchy.resolveHierarchy()
+    long tAdd = System.currentTimeMillis()
+    print "  [4/4] Added objects in ${(tAdd - tAddStart) / 1000.0}s"
 
+    print "  [4/4] Resolving hierarchy..."
+    hierarchy.resolveHierarchy()
     long tDone = System.currentTimeMillis()
-    print "  OK: Imported ${pathObjects.size()} objects in ${(tDone - t0) / 1000.0}s"
+    print "  [4/4] Resolved in ${(tDone - tAdd) / 1000.0}s"
+
+    def totalObjects = hierarchy.getAllObjects(false).size()
+    print "  OK: Imported ${pathObjects.size()} objects in ${(tDone - t0) / 1000.0}s (total in hierarchy: ${totalObjects})"
 
 } catch (Exception e) {
     print "ERROR processing '${imageName}': ${e.getMessage()}"
