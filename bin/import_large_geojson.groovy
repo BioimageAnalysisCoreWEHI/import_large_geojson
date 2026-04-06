@@ -6,6 +6,7 @@ import com.google.gson.JsonElement
 import java.util.concurrent.Executors
 import java.util.concurrent.Callable
 import java.util.concurrent.Future
+import java.util.zip.GZIPInputStream
 
 // ============================================================
 // CONFIGURATION (from environment variables set by Nextflow)
@@ -44,19 +45,30 @@ def stem = imageName
 def geojsonFileName = filePattern.replace('{stem}', stem)
 def geojsonFile = new File(geojsonDirFile, geojsonFileName)
 
+// Also check for gzipped variant
+if (!geojsonFile.exists() && !geojsonFileName.endsWith('.gz')) {
+    def gzFile = new File(geojsonDirFile, geojsonFileName + '.gz')
+    if (gzFile.exists()) {
+        geojsonFile = gzFile
+        geojsonFileName = geojsonFileName + '.gz'
+    }
+}
+
+def isGzipped = geojsonFile.name.endsWith('.gz')
+
 print "═".repeat(60)
 print "Import Large GeoJSON into QuPath"
 print "═".repeat(60)
 print "  Image             : ${imageName}"
 print "  Stem              : ${stem}"
 print "  GeoJSON directory : ${geojsonDir}"
-print "  Looking for       : ${geojsonFileName}"
+print "  Looking for       : ${geojsonFileName}${isGzipped ? '' : ' (or .gz)'}"
 print "  Clear existing    : ${clearExisting}"
 
 if (!geojsonFile.exists()) {
-    print "WARNING: No GeoJSON found for '${imageName}' (looked for ${geojsonFileName})"
+    print "WARNING: No GeoJSON found for '${imageName}' (looked for ${filePattern.replace('{stem}', stem)}{,.gz})"
     print "  Available files in directory:"
-    geojsonDirFile.listFiles()?.findAll { it.name.endsWith('.geojson') }?.take(20)?.each {
+    geojsonDirFile.listFiles()?.findAll { it.name.endsWith('.geojson') || it.name.endsWith('.geojson.gz') }?.take(20)?.each {
         print "    ${it.name}"
     }
     print "═".repeat(60)
@@ -121,6 +133,13 @@ try {
 
     def currentBatch = new ArrayList<JsonElement>(BATCH_SIZE)
 
+    def fis = new FileInputStream(geojsonFile)
+    def bis = new BufferedInputStream(fis, 64 * 1024 * 1024)  // 64 MB read buffer
+    def rawStream = isGzipped ? new GZIPInputStream(bis, 64 * 1024 * 1024) : bis
+    def isr = new InputStreamReader(rawStream, 'UTF-8')
+    def reader = new JsonReader(isr)
+    reader.setLenient(true)
+
     // Closure to process one feature element from the stream
     def processElement = { ->
         def element = jsonElementAdapter.read(reader)
@@ -147,12 +166,6 @@ try {
             print "    ... parsed ${featureCount} features (${pathObjects.size()} converted, memory: ${usedMB}/${maxMB} MB, ${String.format('%.0f', rate)} feat/s)"
         }
     }
-
-    def fis = new FileInputStream(geojsonFile)
-    def bis = new BufferedInputStream(fis, 64 * 1024 * 1024)  // 64 MB read buffer
-    def isr = new InputStreamReader(bis, 'UTF-8')
-    def reader = new JsonReader(isr)
-    reader.setLenient(true)
 
     try {
         def firstToken = reader.peek()
@@ -259,10 +272,12 @@ try {
     long tResolve = System.currentTimeMillis()
     print "  [4/5] Resolved in ${(tResolve - tAdd) / 1000.0}s"
 
-    print "  [5/5] Firing hierarchy update..."
+    print "  [5/5] Firing hierarchy update and saving..."
     fireHierarchyUpdate()
+    def entry = getProjectEntry()
+    entry.saveImageData(getCurrentImageData())
     long tDone = System.currentTimeMillis()
-    print "  [5/5] Update fired in ${(tDone - tResolve) / 1000.0}s"
+    print "  [5/5] Saved in ${(tDone - tResolve) / 1000.0}s"
 
     def totalObjects = hierarchy.getAllObjects(false).size()
     print "  OK: Imported ${pathObjects.size()} objects in ${(tDone - t0) / 1000.0}s (total in hierarchy: ${totalObjects})"

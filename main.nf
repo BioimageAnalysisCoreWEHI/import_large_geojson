@@ -50,7 +50,7 @@ process IMPORT_LARGE_GEOJSON {
     export CLEAR_EXISTING="${clear_existing}"
     export FILE_PATTERN="${file_pattern}"
 
-    "${qupath_bin}" script "${script_path}" --project "${project_path}" --save \
+    "${qupath_bin}" script "${script_path}" --project "${project_path}" \
       2>&1 | tee qupath_geojson_import.log
     """
 }
