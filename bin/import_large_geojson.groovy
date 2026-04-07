@@ -7,6 +7,8 @@ import java.util.concurrent.Executors
 import java.util.concurrent.Callable
 import java.util.concurrent.Future
 import java.util.zip.GZIPInputStream
+import qupath.lib.objects.PathDetectionObject
+import qupath.lib.objects.PathAnnotationObject
 
 // ============================================================
 // CONFIGURATION (from environment variables set by Nextflow)
@@ -18,6 +20,12 @@ def geojsonDir    = envVars.getOrDefault('GEOJSON_DIR', '')
 def clearRaw      = envVars.getOrDefault('CLEAR_EXISTING', 'true').trim().toLowerCase()
 def clearExisting = (clearRaw == '1' || clearRaw == 'true' || clearRaw == 'yes' || clearRaw == 'y')
 def filePattern   = envVars.getOrDefault('FILE_PATTERN', '{stem}.geojson')
+
+// Skip resolveHierarchy if all objects are flat detections (no parent-child nesting).
+// resolveHierarchy() is O(n^2) and is the single biggest bottleneck at scale.
+// Set RESOLVE_HIERARCHY=false in Nextflow env for a major speedup.
+def resolveHierarchyRaw = envVars.getOrDefault('RESOLVE_HIERARCHY', 'true').trim().toLowerCase()
+def doResolveHierarchy  = (resolveHierarchyRaw == '1' || resolveHierarchyRaw == 'true' || resolveHierarchyRaw == 'yes')
 
 if (!geojsonDir) {
     print "ERROR: GEOJSON_DIR environment variable is not set."
@@ -64,6 +72,7 @@ print "  Stem              : ${stem}"
 print "  GeoJSON directory : ${geojsonDir}"
 print "  Looking for       : ${geojsonFileName}${isGzipped ? '' : ' (or .gz)'}"
 print "  Clear existing    : ${clearExisting}"
+print "  Resolve hierarchy : ${doResolveHierarchy}"
 
 if (!geojsonFile.exists()) {
     print "WARNING: No GeoJSON found for '${imageName}' (looked for ${filePattern.replace('{stem}', stem)}{,.gz})"
@@ -89,12 +98,12 @@ try {
     // across a thread pool for maximum throughput.
     // ────────────────────────────────────────────────────────────
     def nThreads = Math.max(2, Runtime.getRuntime().availableProcessors())
-    def BATCH_SIZE = 2000
+    def BATCH_SIZE = 5000
     print "  [1/5] Stream-parsing GeoJSON file (${String.format('%.1f', fileSizeMB)} MB) with ${nThreads} threads, batch size ${BATCH_SIZE}..."
 
     def gson = GsonTools.getInstance()
     def jsonElementAdapter = gson.getAdapter(JsonElement.class)
-    def pathObjects = new ArrayList<PathObject>(400000)
+    def pathObjects = Collections.synchronizedList(new ArrayList<PathObject>(500_000))
     int featureCount = 0
     int errorCount = 0
 
@@ -157,7 +166,7 @@ try {
             }
         }
 
-        if (featureCount % 50000 == 0) {
+        if (featureCount % 100_000 == 0) {
             def rt = Runtime.getRuntime()
             def usedMB = (rt.totalMemory() - rt.freeMemory()) / (1024L * 1024L)
             def maxMB  = rt.maxMemory() / (1024L * 1024L)
@@ -241,6 +250,13 @@ try {
     def typeCounts = pathObjects.groupBy { it.getClass().getSimpleName() }.collectEntries { k, v -> [k, v.size()] }
     print "  Object types: ${typeCounts}"
 
+    // Separate annotations from detections — adding annotations first lets
+    // QuPath build its spatial index once, then bulk-insert detections.
+    def annotations = pathObjects.findAll { it instanceof PathAnnotationObject }
+    def detections  = pathObjects.findAll { it instanceof PathDetectionObject }
+    def others      = pathObjects.findAll { !(it instanceof PathAnnotationObject) && !(it instanceof PathDetectionObject) }
+    print "  Annotations: ${annotations.size()}, Detections: ${detections.size()}, Other: ${others.size()}"
+
     print "  [2/5] Getting current hierarchy..."
     def hierarchy = getCurrentHierarchy()
     long tHierarchy = System.currentTimeMillis()
@@ -261,23 +277,58 @@ try {
         print "  [3/5] Keeping ${existingCount} existing objects (clear_existing=false)"
     }
 
-    print "  [4/5] Adding ${pathObjects.size()} objects to hierarchy..."
+    // Add in order: annotations -> detections -> other
+    // This avoids repeated spatial index rebuilds inside QuPath.
+    print "  [4/5] Adding objects (annotations first, then detections)..."
     long tAddStart = System.currentTimeMillis()
-    hierarchy.addObjects(pathObjects)
-    long tAdd = System.currentTimeMillis()
-    print "  [4/5] Added objects in ${(tAdd - tAddStart) / 1000.0}s"
 
-    print "  [4/5] Resolving hierarchy..."
-    hierarchy.resolveHierarchy()
-    long tResolve = System.currentTimeMillis()
-    print "  [4/5] Resolved in ${(tResolve - tAdd) / 1000.0}s"
+    if (!annotations.isEmpty()) {
+        hierarchy.addObjects(annotations)
+        print "    Added ${annotations.size()} annotations in ${(System.currentTimeMillis() - tAddStart) / 1000.0}s"
+    }
+
+    long tDetStart = System.currentTimeMillis()
+    if (!detections.isEmpty()) {
+        // For very large counts, add in chunks to avoid a single enormous hierarchy update
+        if (detections.size() > 200_000) {
+            def chunkSize = 100_000
+            def chunks = detections.collate(chunkSize)
+            chunks.eachWithIndex { chunk, idx ->
+                hierarchy.addObjects(chunk)
+                print "    Detection chunk ${idx + 1}/${chunks.size()} added (${chunk.size()} objects)"
+            }
+        } else {
+            hierarchy.addObjects(detections)
+        }
+        print "    Added ${detections.size()} detections in ${(System.currentTimeMillis() - tDetStart) / 1000.0}s"
+    }
+
+    if (!others.isEmpty()) {
+        hierarchy.addObjects(others)
+        print "    Added ${others.size()} other objects"
+    }
+
+    long tAdd = System.currentTimeMillis()
+    print "  [4/5] All objects added in ${(tAdd - tAddStart) / 1000.0}s"
+
+    // resolveHierarchy is O(n^2) and VERY expensive at scale.
+    // Skip it if objects are all flat detections (no nesting needed).
+    // Set RESOLVE_HIERARCHY=false in Nextflow env to bypass.
+    if (doResolveHierarchy) {
+        print "  [4/5] Resolving hierarchy (set RESOLVE_HIERARCHY=false to skip)..."
+        hierarchy.resolveHierarchy()
+        long tResolve = System.currentTimeMillis()
+        print "  [4/5] Resolved in ${(tResolve - tAdd) / 1000.0}s"
+    } else {
+        print "  [4/5] Skipping resolveHierarchy (RESOLVE_HIERARCHY=false)"
+    }
 
     print "  [5/5] Firing hierarchy update and saving..."
     fireHierarchyUpdate()
     def entry = getProjectEntry()
     entry.saveImageData(getCurrentImageData())
     long tDone = System.currentTimeMillis()
-    print "  [5/5] Saved in ${(tDone - tResolve) / 1000.0}s"
+    print "  [5/5] Saved in ${(tDone - tAdd) / 1000.0}s"
 
     def totalObjects = hierarchy.getAllObjects(false).size()
     print "  OK: Imported ${pathObjects.size()} objects in ${(tDone - t0) / 1000.0}s (total in hierarchy: ${totalObjects})"

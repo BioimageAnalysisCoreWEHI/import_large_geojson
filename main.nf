@@ -6,6 +6,7 @@ params.script = "${projectDir}/bin/import_large_geojson.groovy"
 params.geojson_dir = null
 params.clear_existing = true
 params.file_pattern = "{stem}.geojson"
+params.resolve_hierarchy = true
 params.outdir = "results"
 params.publish_dir_mode = "copy"
 params.validate_params = true
@@ -17,7 +18,7 @@ process IMPORT_LARGE_GEOJSON {
     publishDir "${params.outdir}", mode: params.publish_dir_mode
 
     input:
-    tuple val(project_path), val(qupath_bin), val(script_path), val(geojson_dir), val(clear_existing), val(file_pattern)
+    tuple val(project_path), val(qupath_bin), val(script_path), val(geojson_dir), val(clear_existing), val(file_pattern), val(resolve_hierarchy)
 
     output:
     path "qupath_geojson_import.log"
@@ -49,6 +50,7 @@ process IMPORT_LARGE_GEOJSON {
     export GEOJSON_DIR="${geojson_dir}"
     export CLEAR_EXISTING="${clear_existing}"
     export FILE_PATTERN="${file_pattern}"
+    export RESOLVE_HIERARCHY="${resolve_hierarchy}"
 
     "${qupath_bin}" script "${script_path}" --project "${project_path}" \
       2>&1 | tee qupath_geojson_import.log
@@ -90,6 +92,7 @@ workflow {
 
     def clearExistingParam = params.get('clear_existing', true) as boolean
     def filePatternParam = params.get('file_pattern', '{stem}.geojson').toString()
+    def resolveHierarchyParam = params.get('resolve_hierarchy', true) as boolean
 
     channel
         .of(tuple(
@@ -98,7 +101,8 @@ workflow {
             scriptFile.toString(),
             geojsonDirFile.toString(),
             clearExistingParam,
-            filePatternParam
+            filePatternParam,
+            resolveHierarchyParam
         ))
         | IMPORT_LARGE_GEOJSON
 }
