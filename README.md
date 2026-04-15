@@ -54,16 +54,18 @@ nextflow run main.nf \
 
 ## Resource profiles
 
-Memory is the main resource for large GeoJSON imports. CPU count is low since QuPath imports are single-threaded.
+Memory is the main resource for large GeoJSON imports.
 
-| Profile | Executor | Queue | CPUs | Memory | Time |
+| Profile | Executor | Queue | CPUs | Memory (per attempt) | Time |
 |---|---|---|---:|---:|---:|
-| `standard` (default) | slurm | regular | 4 | 450 GB | 48h |
-| `small` | slurm | regular | 4 | 128 GB | 48h |
-| `medium` | slurm | regular | 4 | 480 GB | 48h |
-| `large` | slurm | regular | 8 | 1200 GB | 48h |
+| `standard` (default) | slurm | regular | 8 | 240 GB × attempt | 48h |
+| `small` | slurm | regular | 8 | 50 GB × attempt | 48h |
+| `medium` | slurm | regular | 14 | 240 GB × attempt | 48h |
+| `large` | slurm | regular | 16 | 700 GB × attempt | 48h |
 
 Use `-profile small`, `-profile medium`, or `-profile large` to override.
+
+> **Tip:** Adding `--resolve_hierarchy false` significantly reduces both peak memory and runtime when importing flat detections (no annotation nesting). You may be able to use a smaller profile with this flag.
 
 ## Outputs
 
