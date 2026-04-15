@@ -12,18 +12,19 @@ params.publish_dir_mode = "copy"
 params.validate_params = true
 
 process IMPORT_LARGE_GEOJSON {
-    tag "${project_path}"
+    tag "${image_stem}"
     label 'process_heavy'
 
     publishDir "${params.outdir}", mode: params.publish_dir_mode
 
     input:
-    tuple val(project_path), val(qupath_bin), val(script_path), val(geojson_dir), val(clear_existing), val(file_pattern), val(resolve_hierarchy)
+    tuple val(project_path), val(qupath_bin), val(script_path), val(geojson_dir), val(clear_existing), val(file_pattern), val(resolve_hierarchy), val(image_stem)
 
     output:
-    path "qupath_geojson_import.log"
+    path "*.log"
 
     script:
+    def safeTag = image_stem.replaceAll('[^a-zA-Z0-9_.-]', '_')
     """
     set -euo pipefail
 
@@ -51,9 +52,10 @@ process IMPORT_LARGE_GEOJSON {
     export CLEAR_EXISTING="${clear_existing}"
     export FILE_PATTERN="${file_pattern}"
     export RESOLVE_HIERARCHY="${resolve_hierarchy}"
+    export IMAGE_STEM="${image_stem}"
 
     "${qupath_bin}" script "${script_path}" --project "${project_path}" \
-      2>&1 | tee qupath_geojson_import.log
+      2>&1 | tee "qupath_geojson_import_${safeTag}.log"
     """
 }
 
@@ -94,15 +96,34 @@ workflow {
     def filePatternParam = params.get('file_pattern', '{stem}.geojson').toString()
     def resolveHierarchyParam = params.get('resolve_hierarchy', true) as boolean
 
-    channel
-        .of(tuple(
-            projectFile.toString(),
-            qupathExe.toString(),
-            scriptFile.toString(),
-            geojsonDirFile.toString(),
-            clearExistingParam,
-            filePatternParam,
-            resolveHierarchyParam
-        ))
+    // Build regex to extract image stems from GeoJSON filenames.
+    // E.g. "{stem}.geojson" → regex "(.+)\.geojson"
+    def stemPattern = filePatternParam
+        .replace('.', '\\.')
+        .replace('{stem}', '(.+)')
+
+    // Scan geojson_dir for GeoJSON files, extract one stem per file,
+    // then launch a parallel QuPath process per image.
+    Channel
+        .fromPath(["${geojsonDirFile}/*.geojson", "${geojsonDirFile}/*.geojson.gz"])
+        .map { f ->
+            def name = f.name.replaceAll(/\.gz$/, '')
+            def m = (name =~ /${stemPattern}/)
+            m.matches() ? m.group(1) : null
+        }
+        .filter { it != null }
+        .unique()
+        .map { stem ->
+            tuple(
+                projectFile.toString(),
+                qupathExe.toString(),
+                scriptFile.toString(),
+                geojsonDirFile.toString(),
+                clearExistingParam,
+                filePatternParam,
+                resolveHierarchyParam,
+                stem
+            )
+        }
         | IMPORT_LARGE_GEOJSON
 }

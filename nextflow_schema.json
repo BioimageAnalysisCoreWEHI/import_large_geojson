@@ -56,6 +56,11 @@
           "default": "copy",
           "description": "Method used by Nextflow publishDir",
           "enum": ["symlink", "rellink", "link", "copy", "copyNoFollow", "move"]
+        },
+        "resolve_hierarchy": {
+          "type": "boolean",
+          "default": true,
+          "description": "Run QuPath resolveHierarchy() after import. Set false for flat detections to skip O(n^2) nesting step."
         }
       }
     },

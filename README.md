@@ -4,10 +4,11 @@ Nextflow pipeline for importing large GeoJSON cell annotations into a QuPath pro
 
 ## What it does
 
-- Runs QuPath in CLI mode against a `.qpproj` project.
-- Executes `import_large_geojson.groovy` to match and import GeoJSON files into each image in the project.
-- Each GeoJSON file is matched to a project image by filename stem (e.g. `image_001.geojson` → `image_001.ome.tif`).
+- Scans `geojson_dir` for GeoJSON files, extracts image stems from the filenames, and launches **one parallel process per image**.
+- Each process runs QuPath in CLI mode against the `.qpproj` project, importing only the matched image's GeoJSON.
+- GeoJSON files are matched to project images by filename stem (e.g. `image_001.geojson` → `image_001.ome.tif`).
 - Optionally clears existing objects before importing (default: yes).
+- On SLURM, each image gets its own job — a project with 10 images runs 10 concurrent SLURM jobs instead of one sequential job.
 
 ## Required parameters
 
@@ -20,6 +21,7 @@ Nextflow pipeline for importing large GeoJSON cell annotations into a QuPath pro
 - `--script` Groovy script path (default: `bin/import_large_geojson.groovy`).
 - `--clear_existing` Clear all existing objects before importing (default: `true`).
 - `--file_pattern` Pattern for matching GeoJSON files to images (default: `{stem}.geojson`). `{stem}` is replaced with the image name without extension.
+- `--resolve_hierarchy` Run QuPath `resolveHierarchy()` after import (default: `true`). Set `false` for flat detections to skip the O(n²) nesting step — major speedup.
 - `--outdir` Output directory for log files (default: `results`).
 - `--publish_dir_mode` Nextflow `publishDir` mode (default: `copy`).
 
@@ -65,10 +67,12 @@ Use `-profile small`, `-profile medium`, or `-profile large` to override.
 
 ## Outputs
 
-- `qupath_geojson_import.log` with full QuPath run logs including per-image import status.
+- One log file per image: `qupath_geojson_import_<stem>.log` with full QuPath import status.
 
 ## Notes
 
+- The pipeline now runs **one SLURM job per image** for full parallelism. With 10 GeoJSON files you get 10 concurrent imports.
 - For large GeoJSON files (100GB+), use the `medium` or `large` profile to ensure enough memory.
+- If your GeoJSON contains only flat detections (no annotation nesting), set `--resolve_hierarchy false` to skip the expensive O(n²) hierarchy resolution step.
 - The Groovy script handles `.ome.tif` / `.ome.tiff` extensions when matching stems.
-- Images with no matching GeoJSON file are skipped with a warning (not an error).
+- Images with no matching GeoJSON file in `geojson_dir` are simply not processed (no wasted jobs).

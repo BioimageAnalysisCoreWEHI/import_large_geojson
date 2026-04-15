@@ -49,6 +49,14 @@ def stem = imageName
     .replaceAll(/(?i)\.ome\.tiff?$/, "")
     .replaceAll(/\.[^.]+$/, "")
 
+// Per-image parallelism: if IMAGE_STEM is set, only process the matching image.
+// This allows Nextflow to launch one QuPath process per image concurrently.
+def targetStem = envVars.getOrDefault('IMAGE_STEM', '')
+if (targetStem && stem != targetStem) {
+    print "  Skipping '${imageName}' (stem '${stem}' != target '${targetStem}')"
+    return
+}
+
 // Build expected GeoJSON filename from pattern
 def geojsonFileName = filePattern.replace('{stem}', stem)
 def geojsonFile = new File(geojsonDirFile, geojsonFileName)
