@@ -104,12 +104,26 @@ workflow {
 
     // Scan geojson_dir for GeoJSON files, extract one stem per file,
     // then launch a parallel QuPath process per image.
+    // NOTE: Channel.fromPath glob can silently return empty on some NFS/VAST
+    // filesystems; File.listFiles() is more reliable in that environment.
+    def geojsonFiles = geojsonDirFile.listFiles()
+        ?.findAll { f -> f.name.endsWith('.geojson') || f.name.endsWith('.geojson.gz') }
+        ?: []
+
+    if (geojsonFiles.isEmpty()) {
+        error "No .geojson or .geojson.gz files found in: ${params.geojson_dir}"
+    }
+
     Channel
-        .fromPath(["${geojsonDirFile}/*.geojson", "${geojsonDirFile}/*.geojson.gz"])
+        .from(geojsonFiles)
         .map { f ->
-            def name = f.name.replaceAll(/\.gz$/, '')
-            def m = (name =~ /${stemPattern}/)
-            m.matches() ? m.group(1) : null
+            // Try matching against the original filename first (e.g. file_pattern = "{stem}.geojson.gz"),
+            // then fall back to the .gz-stripped name (e.g. file_pattern = "{stem}.geojson").
+            def m = (f.name =~ /${stemPattern}/)
+            if (m.matches()) return m.group(1)
+            def stripped = f.name.replaceAll(/\.gz$/, '')
+            def m2 = (stripped =~ /${stemPattern}/)
+            m2.matches() ? m2.group(1) : null
         }
         .filter { it != null }
         .unique()
