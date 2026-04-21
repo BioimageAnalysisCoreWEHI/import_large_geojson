@@ -51,14 +51,24 @@ def stem = imageName
 
 // Per-image parallelism: if IMAGE_STEM is set, only process the matching image.
 // This allows Nextflow to launch one QuPath process per image concurrently.
+// Match by checking imageName == targetStem (no extension) or imageName starts with targetStem + '.'
+// This handles dots in image stems (e.g. "01041-2.1_Scan1") that confuse naive extension-stripping.
 def targetStem = envVars.getOrDefault('IMAGE_STEM', '')
-if (targetStem && stem != targetStem) {
-    print "  Skipping '${imageName}' (stem '${stem}' != target '${targetStem}')"
-    return
+if (targetStem) {
+    def imageMatchesStem = (imageName == targetStem) || imageName.startsWith(targetStem + '.')
+    if (!imageMatchesStem) {
+        print "  Skipping '${imageName}' (does not match target stem '${targetStem}')"
+        return
+    }
 }
 
+// When targetStem is set, use it directly for the GeoJSON lookup — it is derived from
+// the actual GeoJSON filename and is more reliable than the stem extracted from the
+// QuPath image name (which can be wrong when the name contains dots).
+def effectiveStem = targetStem ?: stem
+
 // Build expected GeoJSON filename from pattern
-def geojsonFileName = filePattern.replace('{stem}', stem)
+def geojsonFileName = filePattern.replace('{stem}', effectiveStem)
 def geojsonFile = new File(geojsonDirFile, geojsonFileName)
 
 // Also check for gzipped variant
