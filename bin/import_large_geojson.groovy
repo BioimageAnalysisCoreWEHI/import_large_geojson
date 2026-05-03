@@ -54,12 +54,14 @@ def stem = imageName
 // Match by checking imageName == targetStem (no extension) or imageName starts with targetStem + '.'
 // This handles dots in image stems (e.g. "01041-2.1_Scan1") that confuse naive extension-stripping.
 def targetStem = envVars.getOrDefault('IMAGE_STEM', '')
+def matchedTarget = false
 if (targetStem) {
     def imageMatchesStem = (imageName == targetStem) || imageName.startsWith(targetStem + '.')
     if (!imageMatchesStem) {
         print "  Skipping '${imageName}' (does not match target stem '${targetStem}')"
         return
     }
+    matchedTarget = true
 }
 
 // When targetStem is set, use it directly for the GeoJSON lookup — it is derived from
@@ -357,3 +359,13 @@ try {
 }
 
 print "═".repeat(60)
+
+// Per-image mode: target was located and processed (success or failure).
+// Skip the remaining images in the project — each one costs ~20s of QuPath
+// image initialization before our script even gets a chance to `return`.
+// Safe because Nextflow launches one QuPath process per IMAGE_STEM and the
+// project is guaranteed to contain no duplicate stems.
+if (matchedTarget) {
+    print "Per-image mode: target processed, exiting JVM to skip remaining images."
+    System.exit(0)
+}
