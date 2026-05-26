@@ -303,8 +303,9 @@ try {
     long tAddStart = System.currentTimeMillis()
 
     if (!annotations.isEmpty()) {
+        annotations.each { it.setLocked(true) }
         hierarchy.addObjects(annotations)
-        print "    Added ${annotations.size()} annotations in ${(System.currentTimeMillis() - tAddStart) / 1000.0}s"
+        print "    Added ${annotations.size()} annotations (locked) in ${(System.currentTimeMillis() - tAddStart) / 1000.0}s"
     }
 
     long tDetStart = System.currentTimeMillis()
