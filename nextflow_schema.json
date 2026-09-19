@@ -20,7 +20,7 @@
           "type": "string",
           "format": "file-path",
           "exists": true,
-          "default": "/stornext/System/data/software/rhel/9/base/tools/QuPath/0.6.0/bin/QuPath",
+          "default": "/stornext/System/data/software/rhel/9/base/tools/QuPath/0.7.0/bin/QuPath",
           "description": "Path to QuPath executable"
         },
         "script": {
