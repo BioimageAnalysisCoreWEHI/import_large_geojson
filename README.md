@@ -17,7 +17,8 @@ Nextflow pipeline for importing large GeoJSON cell annotations into a QuPath pro
 
 ## Optional parameters
 
-- `--qupath_bin` Path to QuPath executable (default: `/stornext/System/data/software/rhel/9/base/tools/QuPath/0.6.0/bin/QuPath`).
+- `--qupath_bin` Path to QuPath executable (default: `/stornext/System/data/software/rhel/9/base/tools/QuPath/0.7.0/bin/QuPath`).
+    Tested against QuPath 0.7.0 (Groovy 5, Java 25) and 0.6.0. To run against 0.6.0, pass `--qupath_bin /stornext/System/data/software/rhel/9/base/tools/QuPath/0.6.0/bin/QuPath`. QuPath bundles its own JRE, so no `module load java` step is required for headless runs.
 - `--script` Groovy script path (default: `bin/import_large_geojson.groovy`).
 - `--clear_existing` Clear all existing objects before importing (default: `true`).
 - `--file_pattern` Pattern for matching GeoJSON files to images (default: `{stem}.geojson`). `{stem}` is replaced with the image name without extension.
@@ -78,3 +79,4 @@ Use `-profile small`, `-profile medium`, or `-profile large` to override.
 - If your GeoJSON contains only flat detections (no annotation nesting), set `--resolve_hierarchy false` to skip the expensive O(n²) hierarchy resolution step.
 - The Groovy script handles `.ome.tif` / `.ome.tiff` extensions when matching stems.
 - Images with no matching GeoJSON file in `geojson_dir` are simply not processed (no wasted jobs).
+- The Groovy script logs via QuPath's logger (slf4j/logback), so per-image log lines carry a timestamp/level prefix. This is required on QuPath 0.7: its per-image batch runner buffers a script's plain `print` output and only emits it on normal return, so the `System.exit(0)` used to skip the remaining project images would otherwise discard the whole import log. Logger output bypasses that capture and always reaches the `.log` artifact.
