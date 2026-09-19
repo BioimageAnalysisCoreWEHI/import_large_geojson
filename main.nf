@@ -1,7 +1,7 @@
 nextflow.enable.dsl = 2
 
 params.project = null
-params.qupath_bin = "/stornext/System/data/software/rhel/9/base/tools/QuPath/0.6.0/bin/QuPath"
+params.qupath_bin = "/stornext/System/data/software/rhel/9/base/tools/QuPath/0.7.0/bin/QuPath"
 params.script = "${projectDir}/bin/import_large_geojson.groovy"
 params.geojson_dir = null
 params.clear_existing = true
